@@ -3,6 +3,16 @@
 # Author: Arne Neumann <discoursegraphs.programming@arne.cl>
 
 '''
+IN PROGRESS: rewrite from lxml.etree to cElementTree (cet)
+
+- cet does not store ancestors of an element, so we'll need to keep track
+  manually, cf. http://stackoverflow.com/a/20132342
+- ExportXMLDocumentGraph allows the text_element parameter to be either
+  an (etree) Element or a '<text>...</text>' string.
+  - for the string variant, we'll need to add "if elem.tag == 'text'"
+    somewhere in the iterparse code
+
+
 The ``exportxml`` module will convert a corpus in Negra ExportXML format [1]
 (e.g. Tüba-D/Z [2]) into a document graph.
 
@@ -45,9 +55,10 @@ Here are the coresponding definitions in the ExportXML header:
 import os
 import re
 import sys
+from xml.etree import cElementTree
 import warnings
 
-from lxml import etree
+#~ from lxml import etree
 
 import discoursegraphs as dg
 from discoursegraphs import DiscourseDocumentGraph
@@ -124,8 +135,8 @@ class ExportXMLCorpus(object):
         Once you have iterated over all documents, call this method again
         if you want to iterate over them again.
         """
-        self.__context = etree.iterparse(self.exportxml_file, events=('end',),
-                                         tag='text', recover=True)
+        self.__context = cElementTree.iterparse(
+            self.exportxml_file, events=('start',))
 
     def __len__(self):
         if self._num_of_documents is not None:
@@ -141,10 +152,11 @@ class ExportXMLCorpus(object):
         adapted from Listing 2 on
         http://www.ibm.com/developerworks/library/x-hiperfparse/
         '''
-        parser = etree.XMLParser(target = TextCountTarget())
-        # When iterated over, 'results' will contain the output from
-        # target parser's close() method
-        num_of_documents = etree.parse(self.exportxml_file, parser)
+        parser = cElementTree.XMLParser(target = TextCountTarget())
+
+        # this gets the return value of the TextCountTarget's close method
+        num_of_documents = cElementTree.parse(
+            self.exportxml_file, parser).getroot()
         self._num_of_documents = num_of_documents
         return num_of_documents
 
@@ -168,14 +180,17 @@ class ExportXMLCorpus(object):
         ``ExportXMLDocumentGraph``s manually.
         """
         for _event, elem in context:
-            if not self.debug:
-                yield ExportXMLDocumentGraph(elem)
+            if elem.tag == 'text':
+                if not self.debug:
+                    yield ExportXMLDocumentGraph(elem)
+                else:
+                    yield elem
+                # removes element (and references to it) from memory after processing it
+                elem.clear()
+                #~ while elem.getprevious() is not None:
+                    #~ del elem.getparent()[0]
             else:
-                yield elem
-            # removes element (and references to it) from memory after processing it
-            elem.clear()
-            while elem.getprevious() is not None:
-                del elem.getparent()[0]
+                elem.clear()
         del context
 
 
@@ -216,8 +231,8 @@ class ExportXMLDocumentGraph(DiscourseDocumentGraph):
         super(ExportXMLDocumentGraph, self).__init__(namespace=namespace)
 
         if isinstance(text_element, str):
-            _event, text_element = etree.iterparse(
-                text_element, events=('end',), tag='text', recover=True).next()
+            _event, text_element = cElementTree.iterparse(
+                text_element, events=('start',), tag='text').next()
 
         self.name = name if name else text_element.attrib[add_ns('id')]
         self.ns = namespace
@@ -249,12 +264,14 @@ class ExportXMLDocumentGraph(DiscourseDocumentGraph):
 
     def parse_child_elements(self, element):
         '''parses all children of an etree element'''
-        for child in element.iterchildren():
+        for child in element:
             self.parsers[child.tag](child)
 
     def parse_descedant_elements(self, element):
         '''parses all descendants of an etree element'''
-        for descendant in element.iterdescendants():
+        element_iter = element.iter()
+        _root = element_iter.next()
+        for descendant in element_iter:
             self.parsers[descendant.tag](descendant)
 
     def add_connective(self, connective):
@@ -542,6 +559,7 @@ class ExportXMLDocumentGraph(DiscourseDocumentGraph):
             etree representation of a sentence
             (syntax tree with coreference annotation)
         """
+        #~ import pudb; pudb.set_trace()
         sent_root_id = sentence.attrib[add_ns('id')]
         # add edge from document root to sentence root
         self.add_edge(self.root, sent_root_id, edge_type=dg.EdgeTypes.spanning_relation)
@@ -549,7 +567,7 @@ class ExportXMLDocumentGraph(DiscourseDocumentGraph):
 
         sentence_token_ids = []
 
-        for descendant in sentence.iterdescendants('word'):
+        for descendant in sentence.iter('word'):
             sentence_token_ids.append(self.get_element_id(descendant))
 
         self.node[sent_root_id]['tokens'] = sentence_token_ids
@@ -621,7 +639,7 @@ class ExportXMLDocumentGraph(DiscourseDocumentGraph):
         self.add_node(topic_id, layers={self.ns, self.ns+':topic'},
                       description=topic.attrib['description'])
         topic_tokens = []
-        for word in topic.iterdescendants('word'):
+        for word in topic.iter('word'):
             word_id = self.get_element_id(word)
             topic_tokens.append(word_id)
             self.add_edge(topic_id, word_id, layers={self.ns, self.ns+':topic'},

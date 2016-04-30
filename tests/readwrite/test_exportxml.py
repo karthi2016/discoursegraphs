@@ -264,9 +264,11 @@ def test_read_exportxml():
     exportxml_filepath = os.path.join(dg.DATA_ROOT_DIR, 'exportxml-example.xml')
     exportxml_corpus = dg.read_exportxml(exportxml_filepath)
     assert isinstance(exportxml_corpus, dg.readwrite.exportxml.ExportXMLCorpus)
+
     assert len(exportxml_corpus) == 3
 
     docgraph_stats = []
+    import pudb; pudb.set_trace()
     for docgraph in exportxml_corpus:
         assert isinstance(docgraph, dg.readwrite.exportxml.ExportXMLDocumentGraph)
 
@@ -280,3 +282,8 @@ def test_read_exportxml():
     text_elem = next(exportxml_corpus_debug)
     assert isinstance(text_elem, lxml.etree._Element)
     assert text_elem.tag == 'text'
+    
+
+@pytest.mark.xfail
+def test_read_exportxml_fromstring():
+    raise NotImplementedError
