@@ -3,31 +3,34 @@
 # Author: Arne Neumann <discoursegraphs.programming@arne.cl>
 
 """
-This module converts a *.dis file (used by old versions of RSTTool to
-annotate rhetorical structure) into a networkx-based directed graph
-(``DiscourseDocumentGraph``).
+This module converts a the output of the Heilman and Sagae (2015) discoure
+parser into a networkx-based directed graph (``DiscourseDocumentGraph``).
+
+This module contains some MIT licensed code from
+github.com/EducationalTestingService/discourse-parsing .
 """
 
 import os
 from collections import defaultdict
+import json
 
+import nltk
 from nltk.tree import ParentedTree
 
 from discoursegraphs import DiscourseDocumentGraph, EdgeTypes
-from discoursegraphs.readwrite.rst.common import (
-    fix_rst_treebank_tree_str, convert_parens_in_rst_tree_str,
-    SUBTREE_TYPES)
+
+# TODO: do we need to touch the bracketing of the HS2015 format?
+#~ from discoursegraphs.readwrite.rst.common import convert_parens_in_rst_tree_str
 
 
+SUBTREE_TYPES = ('root', 'nucleus', 'satellite')
 
-NODE_TYPES = ('leaf', 'span')
 
-
-class RSTLispDocumentGraph(DiscourseDocumentGraph):
+class RSTHS2015DocumentGraph(DiscourseDocumentGraph):
     """
     A directed graph with multiple edges (based on a networkx
     MultiDiGraph) that represents the rhetorical structure of a
-    document. It is generated from a *.dis file.
+    document. It is generated from a HS2015 file.
 
     Attributes
     ----------
@@ -40,16 +43,16 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
     tokens : list of str
         sorted list of all token node IDs contained in this document graph
     """
-    def __init__(self, dis_filepath, name=None, namespace='rst',
+    def __init__(self, heilman_filepath, name=None, namespace='rst',
                  tokenize=True, precedence=False):
         """
-        Creates an RSTLispDocumentGraph from a Rhetorical Structure *.dis
+        Creates an RSTHS2015DocumentGraph from a Rhetorical Structure HS2015
         file and adds metadata to it.
 
         Parameters
         ----------
-        dis_filepath : str
-            absolute or relative path to the Rhetorical Structure *.dis file to be
+        heilman_filepath : str
+            absolute or relative path to the Rhetorical Structure HS2015 file to be
             parsed.
         name : str or None
             the name or ID of the graph to be generated. If no name is
@@ -61,9 +64,9 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
             (root precedes token1, which precedes token2 etc.)
         """
         # super calls __init__() of base class DiscourseDocumentGraph
-        super(RSTLispDocumentGraph, self).__init__()
+        super(RSTHS2015DocumentGraph, self).__init__()
 
-        self.name = name if name else os.path.basename(dis_filepath)
+        self.name = name if name else os.path.basename(heilman_filepath)
         self.ns = namespace
         self.root = 0
         self.add_node(self.root, layers={self.ns}, label=self.ns+':root_node')
@@ -72,20 +75,43 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
 
         self.tokenized = tokenize
         self.tokens = []
-        self.rst_tree = self.file2tree(dis_filepath)
-        self.parse_rst_tree(self.rst_tree)
+        self.rst_trees = self.file2trees(heilman_filepath)
+        for rst_tree in self.rst_trees:
+            self.parse_rst_tree(rst_tree)
 
         if precedence:
             self.add_precedence_relations()
 
     @staticmethod
-    def file2tree(dis_filepath):
-        """converts a *.dis file into a ParentedTree (NLTK) instance"""
-        with open(dis_filepath) as f:
-            rst_tree_str = f.read().strip()
-            rst_tree_str = fix_rst_treebank_tree_str(rst_tree_str)
-            rst_tree_str = convert_parens_in_rst_tree_str(rst_tree_str)
-            return ParentedTree.fromstring(rst_tree_str)
+    def file2trees(heilman_filepath):
+        """convert the output of the Heilman and Sagae (2015) discourse parser
+        into nltk.ParentedTree instances.
+
+        Parameters
+        ----------
+        heilman_filepath : str
+            path to a file containing the output of Heilman and Sagae's 2015
+            discourse parser
+
+        Returns
+        -------
+        parented_trees : list(nltk.ParentedTree)
+            a list of all RST parses that the discourse parser created,
+            represented as nltk parented trees
+        """
+        with open(heilman_filepath, 'r') as parsed_file:
+            heilman_json = json.load(parsed_file)
+
+        edus = heilman_json['edu_tokens']
+        scored_rst_trees = heilman_json['scored_rst_trees']
+
+        parented_trees = []
+        for scored_rst_tree in scored_rst_trees:
+            tree_str = scored_rst_tree['tree']
+            parented_tree = nltk.ParentedTree.fromstring(tree_str)
+            #~ _add_edus_to_tree(parented_tree, edus)
+            parented_trees.append(parented_tree)
+        return parented_trees
 
     def parse_rst_tree(self, rst_tree, indent=0):
         """parse an RST ParentedTree into this document graph"""
@@ -117,8 +143,7 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
             else: # node_type == 'span'
                 self.add_node(node_id, attr_dict={self.ns+':rel_type': relation_type,
                                                    self.ns+':node_type': node_type})
-                children = rst_tree[3:]
-                child_types = self.get_child_types(children)
+                child_types = self.get_child_types(rst_tree)
 
                 expected_child_types = set(['nucleus', 'satellite'])
                 unexpected_child_types = set(child_types).difference(expected_child_types)
@@ -127,13 +152,13 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
 
                 if 'satellite' not in child_types:
                     # span only contains nucleii -> multinuc
-                    for child in children:
+                    for child in rst_tree:
                         child_node_id = self.get_node_id(child)
                         self.add_edge(node_id, child_node_id, attr_dict={self.ns+':rel_type': relation_type})
 
-                elif len(child_types['satellite']) == 1 and len(children) == 1:
+                elif len(child_types['satellite']) == 1 and len(rst_tree) == 1:
                     if tree_type == 'nucleus':
-                        child = children[0]
+                        child = rst_tree[0]
                         child_node_id = self.get_node_id(child)
                         self.add_edge(
                             node_id, child_node_id,
@@ -148,8 +173,8 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
                     nucleus_index = child_types['nucleus'][0]
                     satellite_index = child_types['satellite'][0]
 
-                    nucleus_node_id = self.get_node_id(children[nucleus_index])
-                    satellite_node_id = self.get_node_id(children[satellite_index])
+                    nucleus_node_id = self.get_node_id(rst_tree[nucleus_index])
+                    satellite_node_id = self.get_node_id(rst_tree[satellite_index])
                     self.add_edge(node_id, nucleus_node_id, attr_dict={self.ns+':rel_type': 'span'},
                                   edge_type=EdgeTypes.spanning_relation)
                     self.add_edge(nucleus_node_id, satellite_node_id,
@@ -158,7 +183,7 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
                 else:
                     raise ValueError("Unexpected child combinations: {}\n".format(child_types))
 
-                for child in children:
+                for child in rst_tree:
                     self.parse_rst_tree(child, indent=indent+1)
 
     def get_child_types(self, children):
@@ -179,30 +204,28 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
 
     @staticmethod
     def get_tree_type(tree):
-        """Return the type of the (sub)tree: 'root', 'nucleus' or 'satellite'.
+        """Return the (sub)tree type: 'root', 'nucleus' or 'satellite'
 
         Parameters
         ----------
         tree : nltk.tree.ParentedTree
             a tree representing a rhetorical structure (or a part of it)
         """
-        tree_type = tree.label().lower()
+        tree_type = tree.label().lower().split(':')[0]
         assert tree_type in SUBTREE_TYPES
         return tree_type
 
     @staticmethod
     def get_node_type(tree):
         """Return the node type ('leaf' or 'span') of a subtree
-        (i.e. 'nucleus' or 'satellite').
+        (i.e. a nucleus or a satellite).
 
         Parameters
         ----------
         tree : nltk.tree.ParentedTree
             a tree representing a rhetorical structure (or a part of it)
         """
-        node_type = tree[0].label()
-        assert node_type in NODE_TYPES
-        return node_type
+        return 'leaf' if tree[0].label() == u'text' else 'span'
 
     @staticmethod
     def get_relation_type(tree):
@@ -219,7 +242,7 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
         relation_type : str
             the type of the rhetorical relation that this (sub)tree represents
         """
-        return tree[1][0]
+        return tree.label().split(':')[1]
 
     def get_node_id(self, nuc_or_sat):
         """return the node ID of the given nucleus or satellite"""
@@ -228,15 +251,37 @@ class RSTLispDocumentGraph(DiscourseDocumentGraph):
             leaf_id = nuc_or_sat[0].leaves()[0]
             return '{0}:{1}'.format(self.ns, leaf_id)
         else: # node_type == 'span'
-            span_start = nuc_or_sat[0].leaves()[0]
-            span_end = nuc_or_sat[0].leaves()[1]
+            span_start = nuc_or_sat.leaves()[0]
+            span_end = nuc_or_sat.leaves()[-1]
             return '{0}:span:{1}-{2}'.format(self.ns, span_start, span_end)
 
 
-# pseudo-function to create a document graph from a RST (.dis) file
-read_dis = RSTLispDocumentGraph
+def _add_edus_to_tree(parented_tree, edus):
+    """replace EDU indices with the text of the EDUs
+    in a parented tree.
+
+    Parameters
+    ----------
+    parented_tree : nltk.ParentedTree
+        a parented tree that only contains EDU indices
+        as leaves
+    edus : list(list(unicode))
+        a list of EDUs, where each EDU is represented as
+        a list of tokens
+    """
+    for i, child in enumerate(parented_tree):
+        if isinstance(child, nltk.Tree):
+            _add_edus_to_tree(child, edus)
+        else:
+            edu_index = int(child)
+            parented_tree[i] = edus[edu_index]
+
+
+# pseudo-function to create a document graph from a RST (HS2015) file
+read_hs2015 = RSTHS2015DocumentGraph
 
 
 if __name__ == '__main__':
-    generic_converter_cli(RSTLispDocumentGraph, 'RST (rhetorical structure)')
+    generic_converter_cli(RSTHS2015DocumentGraph, 'RST (rhetorical structure)')
+
 
